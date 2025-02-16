@@ -813,9 +813,59 @@ export default class WASI {
           return wasi.ERRNO_BADF;
         }
       },
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      poll_oneoff(in_, out, nsubscriptions) {
-        throw "async io not supported";
+      async poll_oneoff(
+        in_ptr: number,
+        out_ptr: number,
+        nsubscriptions: number,
+      ): Promise<number> {
+        if (nsubscriptions === 0) {
+          return wasi.ERRNO_INVAL;
+        }
+        // TODO: For now, we only support a single subscription just to be enough for wasi-libc's
+        // clock_nanosleep.
+        if (nsubscriptions > 1) {
+          return wasi.ERRNO_NOTSUP;
+        }
+
+        // Read a subscription from the in buffer
+        const buffer = new DataView(self.inst.exports.memory.buffer);
+        const userdata = buffer.getBigUint64(in_ptr, true);
+        const eventtype = buffer.getUint8(in_ptr + 8);
+        // TODO: For now, we only support clock subscriptions.
+        if (eventtype !== wasi.EVENTTYPE_CLOCK) {
+          return wasi.ERRNO_NOTSUP;
+        }
+        const clockid = buffer.getUint32(in_ptr + 16, true);
+        const timeout = buffer.getBigUint64(in_ptr + 24, true);
+        const flags = buffer.getUint16(in_ptr + 36, true);
+
+        // Select timer
+        let getNow: (() => bigint) | undefined = undefined;
+        let error: number = wasi.ERRNO_SUCCESS;
+        if (clockid === wasi.CLOCKID_MONOTONIC) {
+          getNow = () => BigInt(Math.round(performance.now() * 1_000_000));
+        } else if (clockid === wasi.CLOCKID_REALTIME) {
+          getNow = () => BigInt(new Date().getTime()) * 1_000_000n;
+        } else {
+          getNow = () => BigInt(0);
+          error = wasi.ERRNO_INVAL;
+        }
+
+        // Perform the wait
+        const endTime =
+          (flags & wasi.SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME) !== 0
+            ? timeout
+            : getNow() + timeout;
+        while (endTime > getNow()) {
+          // block until the timeout is reached
+        }
+
+        // Write an event to the out buffer
+        buffer.setBigUint64(out_ptr, userdata, true);
+        buffer.setUint16(out_ptr + 8, error, true);
+        buffer.setUint8(out_ptr + 10, wasi.EVENTTYPE_CLOCK);
+
+        return wasi.ERRNO_SUCCESS;
       },
       proc_exit(exit_code: number) {
         throw new WASIProcExit(exit_code);
