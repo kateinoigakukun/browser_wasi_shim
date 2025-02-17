@@ -824,20 +824,21 @@ export default class WASI {
         // TODO: For now, we only support a single subscription just to be enough for wasi-libc's
         // clock_nanosleep.
         if (nsubscriptions > 1) {
+          debug.log("poll_oneoff: only a single subscription is supported");
           return wasi.ERRNO_NOTSUP;
         }
 
         // Read a subscription from the in buffer
         const buffer = new DataView(self.inst.exports.memory.buffer);
-        const userdata = buffer.getBigUint64(in_ptr, true);
-        const eventtype = buffer.getUint8(in_ptr + 8);
+        const s = wasi.Subscription.read_bytes(buffer, in_ptr);
+        const eventtype = s.eventtype;
+        const clockid = s.clockid;
+        const timeout = s.timeout;
         // TODO: For now, we only support clock subscriptions.
         if (eventtype !== wasi.EVENTTYPE_CLOCK) {
+          debug.log("poll_oneoff: only clock subscriptions are supported");
           return wasi.ERRNO_NOTSUP;
         }
-        const clockid = buffer.getUint32(in_ptr + 16, true);
-        const timeout = buffer.getBigUint64(in_ptr + 24, true);
-        const flags = buffer.getUint16(in_ptr + 36, true);
 
         // Select timer
         let getNow: (() => bigint) | undefined = undefined;
@@ -853,7 +854,7 @@ export default class WASI {
 
         // Perform the wait
         const endTime =
-          (flags & wasi.SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME) !== 0
+          (s.flags & wasi.SUBCLOCKFLAGS_SUBSCRIPTION_CLOCK_ABSTIME) !== 0
             ? timeout
             : getNow() + timeout;
         while (endTime > getNow()) {
@@ -861,9 +862,8 @@ export default class WASI {
         }
 
         // Write an event to the out buffer
-        buffer.setBigUint64(out_ptr, userdata, true);
-        buffer.setUint16(out_ptr + 8, error, true);
-        buffer.setUint8(out_ptr + 10, wasi.EVENTTYPE_CLOCK);
+        const event = new wasi.Event(s.userdata, error, eventtype);
+        event.write_bytes(buffer, out_ptr);
 
         return wasi.ERRNO_SUCCESS;
       },
